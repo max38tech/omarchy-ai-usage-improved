@@ -1,0 +1,46 @@
+#!/bin/bash
+# Preserve stock refresh behavior, auto-refresh expired Claude Code OAuth tokens
+# when a valid refresh token exists, and add the user-owned Antigravity collector.
+export PATH="$PATH:$HOME/.local/share/mise/shims:$HOME/.local/bin"
+
+orig_args=("$@")
+only=()
+flags=()
+skip_antigravity=0
+skip_claude=0
+while (( $# )); do
+  case "$1" in
+    --except)
+      [[ ${2:-} == antigravity ]] && skip_antigravity=1
+      [[ ${2:-} == claude ]] && skip_claude=1
+      shift
+      ;;
+    --force|--limits-only) flags+=("$1") ;;
+    *) only+=("$1") ;;
+  esac
+  shift
+done
+
+if (( ! skip_claude )); then
+  if (( ${#only[@]} == 0 )) || [[ " ${only[*]} " == *" claude "* ]]; then
+    claude_creds="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json"
+    if [[ -f $claude_creds ]] && jq -e --argjson now_ms "$(($(date +%s) * 1000 + 60000))" '
+      .claudeAiOauth
+      | (.refreshToken // "") != ""
+      and ((.expiresAt // 0) > 0)
+      and ((.expiresAt // 0) <= $now_ms)
+      and (((.refreshTokenExpiresAt // 0) == 0) or ((.refreshTokenExpiresAt // 0) > $now_ms))
+    ' "$claude_creds" >/dev/null 2>&1; then
+      timeout 15 claude auth status >/dev/null 2>&1 || true
+    fi
+  fi
+fi
+
+status=0
+omarchy-agent-usage-update "${orig_args[@]}" || status=$?
+if (( ! skip_antigravity )); then
+  if (( ${#only[@]} == 0 )) || [[ " ${only[*]} " == *" antigravity "* ]]; then
+    "$(dirname "$0")/collect-antigravity.py" "${flags[@]}" >/dev/null || status=$?
+  fi
+fi
+exit "$status"
